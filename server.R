@@ -1,82 +1,70 @@
+# ==========================
+# Load Required Libraries
+# ==========================
 library(shiny)
-library(DT)
+library(dplyr)
 
-# Source the UBCF and IBCF model logic
-source("ubcf_model.R")
-source("ibcf_model.R")
+# ==========================
+# Source Model Scripts
+# ==========================
+source("ubcf_model.R")      # For get_ubcf_recommendations()
+source("ibcf_model.R")      # For Queue_recommendation()
+shinyServer(function(input, output, session) {
 
-# Define Server
-server <- function(input, output, session) {
-  # Reactive value to store UBCF recommendations
-  ubcf_recommendations <- reactiveVal(NULL)
-  
-  # Reactive value to store queue recommendations for a clicked song
-  queue_recommendations <- reactiveVal(NULL)
-  
-  # Observe when the "Get Recommendations" button is clicked
+  user_data <- reactiveValues(user_id = NULL)
+
+  # On submit, store user ID
   observeEvent(input$submit, {
-    user_id <- input$uid
-    num_recommendations <- input$num_recommendations  # Get the number of recommendations
-    
-    # Get recommendations from the UBCF model
-    recommendations <- get_recommendations(user_id, n = num_recommendations)
-    ubcf_recommendations(recommendations)  # Store UBCF recommendations in reactive value
+    user_data$user_id <- input$uid
   })
-  
-  # Render the UBCF recommendations table
+
+  # Reactive value to store UBCF recommendations
+  ubcf_recs <- reactiveVal()
+
+  # General UBCF Recommendations
   output$recommendations_table <- renderDT({
-    recommendations <- ubcf_recommendations()
-    
-    if (!is.null(recommendations) && nrow(recommendations) > 0) {
-      datatable(
-        recommendations,
-        selection = "single",  # Enable single row selection
-        options = list(dom = "t", pageLength = input$num_recommendations)
-      )
-    } else {
-      datatable(data.frame("Error" = "No recommendations available"), options = list(dom = "t"))
+    req(user_data$user_id)
+    recs <- get_ubcf_recommendations(user_data$user_id, n = input$num_recommendations)
+    ubcf_recs(recs)  # Save to reactive for use on click
+    if (is.null(recs) || nrow(recs) == 0) {
+      return(data.frame(Message = "No recommendations found"))
     }
+    datatable(recs, selection = "single", options = list(pageLength = 10))
   })
-  
-  # Observe when a song is clicked in the recommendations table
+
+  # Auto-populate queue_sid input and simulate queue generation
   observeEvent(input$recommendations_table_rows_selected, {
-    # Get the selected row index
-    selected_row <- input$recommendations_table_rows_selected
-    
-    # Check if a row is selected
-    if (!is.null(selected_row)) {
-      # Extract the Song ID (assuming the table has a column named 'sid')
-      recommendations <- ubcf_recommendations()
-      selected_sid <- recommendations[selected_row, "sid"]
-      
-      # Update the queue_sid input box with the selected Song ID
+    selected_index <- input$recommendations_table_rows_selected
+    recs <- ubcf_recs()
+    if (length(selected_index) > 0 && !is.null(recs)) {
+      selected_sid <- recs$sid[selected_index]
       updateTextInput(session, "queue_sid", value = selected_sid)
+      
+      # Trigger queue recommendation logic
+      uid <- isolate(user_data$user_id)
+      queue <- Queue_recommendation(selected_sid, uid, n = input$num_recommendations)
+      output$queue_table <- renderDT({
+        if (is.null(queue) || nrow(queue) == 0) {
+          data.frame(Message = "No queue recommendations found")
+        } else {
+          datatable(queue, options = list(pageLength = 10))
+        }
+      })
     }
   })
-  
-  # Automatically trigger "Get Queue Recommendations" when queue_sid is updated
-  observeEvent(input$queue_sid, {
-    clicked_sid <- input$queue_sid  # Get the Song ID from the input field
-    user_id <- input$uid  # Use the same user ID
-    
-    # Validate clicked_sid
-    if (!is.null(clicked_sid) && clicked_sid != "") {
-      # Get queue recommendations for the entered Song ID
-      queue <- recommend_from_song(clicked_sid, user_id, n = input$num_recommendations)
-      queue_recommendations(queue)  # Store queue recommendations in reactive value
-    } else {
-      queue_recommendations(data.frame("Error" = "Invalid or missing Song ID"))
-    }
+
+  # Manual button option still works
+  observeEvent(input$get_queue, {
+    clicked_sid <- input$queue_sid
+    uid <- isolate(user_data$user_id)
+    queue <- Queue_recommendation(clicked_sid, uid, n = input$num_recommendations)
+    output$queue_table <- renderDT({
+      if (is.null(queue) || nrow(queue) == 0) {
+        data.frame(Message = "No queue recommendations found")
+      } else {
+        datatable(queue, options = list(pageLength = 10))
+      }
+    })
   })
-  
-  # Render the queue recommendations table
-  output$queue_table <- renderDT({
-    queue <- queue_recommendations()
-    
-    if (!is.null(queue) && nrow(queue) > 0) {
-      datatable(queue, options = list(dom = "t", pageLength = input$num_recommendations))
-    } else {
-      datatable(data.frame("Error" = "No queue recommendations available"), options = list(dom = "t"))
-    }
-  })
-}
+
+})
